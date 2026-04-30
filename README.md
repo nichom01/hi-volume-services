@@ -45,6 +45,22 @@ M4 is implemented with:
 - Aggregation state tables for `calculate` and `present` to coordinate multi-event joins
 - Health/readiness endpoints on ports `8005` to `8008`
 
+## M5 status
+
+M5 is implemented with:
+
+- Kubernetes manifests under `k8s/base` with:
+  - namespace, config map, secret template
+  - StatefulSets for PostgreSQL, Zookeeper, Kafka
+  - Deployments + Services for all 8 microservices
+  - baseline network policies (default deny + internal allow)
+- Dev overlay under `k8s/overlays/dev` for single-replica deployment
+- CI/CD workflow in `.github/workflows/ci-cd.yml`:
+  - service-level `go test` matrix
+  - Docker image build (and GHCR push on `main`)
+  - kustomize validation for base + dev overlay
+  - manual `workflow_dispatch` deploy job to apply dev overlay
+
 ## Quick start
 
 ```bash
@@ -69,4 +85,18 @@ If Kafka/Zookeeper metadata drifts during local iteration, reset volumes:
 
 ```bash
 make dev-reset
+```
+
+## Kubernetes quick start
+
+Render base manifests:
+
+```bash
+kubectl kustomize k8s/base
+```
+
+Render dev overlay:
+
+```bash
+kubectl kustomize k8s/overlays/dev
 ```

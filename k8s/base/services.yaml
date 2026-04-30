@@ -1,0 +1,308 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: declaration-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: declaration-service
+  template:
+    metadata:
+      labels:
+        app: declaration-service
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/nichom01/hi-volume-services/declaration-service:latest
+          envFrom:
+            - configMapRef:
+                name: app-config
+          env:
+            - name: SERVICE_PORT
+              value: "8001"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: DATABASE_URL
+            - name: INBOUND_TOPIC
+              value: inbound
+            - name: DECLARATION_CREATED_TOPIC
+              value: declaration.created
+          ports:
+            - containerPort: 8001
+          readinessProbe:
+            httpGet: { path: /ready, port: 8001 }
+          livenessProbe:
+            httpGet: { path: /health, port: 8001 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: declaration-service
+spec:
+  selector:
+    app: declaration-service
+  ports:
+    - port: 8001
+      targetPort: 8001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: validate-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: validate-service
+  template:
+    metadata:
+      labels:
+        app: validate-service
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/nichom01/hi-volume-services/validate-service:latest
+          envFrom: [{ configMapRef: { name: app-config } }]
+          env:
+            - name: SERVICE_PORT
+              value: "8002"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: app-secrets, key: DATABASE_URL } }
+            - name: INPUT_TOPIC
+              value: declaration.created
+            - name: VALIDATION_PASSED_TOPIC
+              value: validation.passed
+            - name: VALIDATION_FAILED_TOPIC
+              value: validation.failed
+          ports: [{ containerPort: 8002 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8002 } }
+          livenessProbe: { httpGet: { path: /health, port: 8002 } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: validate-service
+spec:
+  selector: { app: validate-service }
+  ports: [{ port: 8002, targetPort: 8002 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: audit-service }
+  template:
+    metadata:
+      labels: { app: audit-service }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/nichom01/hi-volume-services/audit-service:latest
+          envFrom: [{ configMapRef: { name: app-config } }]
+          env:
+            - name: SERVICE_PORT
+              value: "8003"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: app-secrets, key: DATABASE_URL } }
+            - name: INPUT_TOPIC
+              value: declaration.created
+            - name: AUDIT_LOGGED_TOPIC
+              value: audit.logged
+          ports: [{ containerPort: 8003 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8003 } }
+          livenessProbe: { httpGet: { path: /health, port: 8003 } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: audit-service
+spec:
+  selector: { app: audit-service }
+  ports: [{ port: 8003, targetPort: 8003 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: risk-service }
+  template:
+    metadata:
+      labels: { app: risk-service }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/nichom01/hi-volume-services/risk-service:latest
+          envFrom: [{ configMapRef: { name: app-config } }]
+          env:
+            - name: SERVICE_PORT
+              value: "8004"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: app-secrets, key: DATABASE_URL } }
+            - name: INPUT_TOPIC
+              value: declaration.created
+            - name: RISK_ASSESSED_TOPIC
+              value: risk.assessed
+            - name: RISK_FLAGGED_TOPIC
+              value: risk.flagged
+          ports: [{ containerPort: 8004 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8004 } }
+          livenessProbe: { httpGet: { path: /health, port: 8004 } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: risk-service
+spec:
+  selector: { app: risk-service }
+  ports: [{ port: 8004, targetPort: 8004 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calculate-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: calculate-service }
+  template:
+    metadata:
+      labels: { app: calculate-service }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/nichom01/hi-volume-services/calculate-service:latest
+          envFrom: [{ configMapRef: { name: app-config } }]
+          env:
+            - name: SERVICE_PORT
+              value: "8005"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: app-secrets, key: DATABASE_URL } }
+            - name: CALCULATION_COMPLETED_TOPIC
+              value: calculation.completed
+          ports: [{ containerPort: 8005 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8005 } }
+          livenessProbe: { httpGet: { path: /health, port: 8005 } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: calculate-service
+spec:
+  selector: { app: calculate-service }
+  ports: [{ port: 8005, targetPort: 8005 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: payment-service }
+  template:
+    metadata:
+      labels: { app: payment-service }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/nichom01/hi-volume-services/payment-service:latest
+          envFrom: [{ configMapRef: { name: app-config } }]
+          env:
+            - name: SERVICE_PORT
+              value: "8006"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: app-secrets, key: DATABASE_URL } }
+            - name: INPUT_TOPIC
+              value: calculation.completed
+            - name: PAYMENT_COMPLETED_TOPIC
+              value: payment.completed
+          ports: [{ containerPort: 8006 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8006 } }
+          livenessProbe: { httpGet: { path: /health, port: 8006 } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+spec:
+  selector: { app: payment-service }
+  ports: [{ port: 8006, targetPort: 8006 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: notify-service }
+  template:
+    metadata:
+      labels: { app: notify-service }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/nichom01/hi-volume-services/notify-service:latest
+          envFrom: [{ configMapRef: { name: app-config } }]
+          env:
+            - name: SERVICE_PORT
+              value: "8007"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: app-secrets, key: DATABASE_URL } }
+            - name: NOTIFICATION_SENT_TOPIC
+              value: notification.sent
+          ports: [{ containerPort: 8007 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8007 } }
+          livenessProbe: { httpGet: { path: /health, port: 8007 } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notify-service
+spec:
+  selector: { app: notify-service }
+  ports: [{ port: 8007, targetPort: 8007 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: present-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: present-service }
+  template:
+    metadata:
+      labels: { app: present-service }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/nichom01/hi-volume-services/present-service:latest
+          envFrom: [{ configMapRef: { name: app-config } }]
+          env:
+            - name: SERVICE_PORT
+              value: "8008"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: app-secrets, key: DATABASE_URL } }
+            - name: TRANSACTION_COMPLETED_TOPIC
+              value: transaction.completed
+          ports: [{ containerPort: 8008 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8008 } }
+          livenessProbe: { httpGet: { path: /health, port: 8008 } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: present-service
+spec:
+  selector: { app: present-service }
+  ports: [{ port: 8008, targetPort: 8008 }]

@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-internal
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - declaration-service
+          - validate-service
+          - audit-service
+          - risk-service
+          - calculate-service
+          - payment-service
+          - notify-service
+          - present-service
+          - postgres
+          - kafka
+          - zookeeper
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
