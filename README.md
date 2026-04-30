@@ -127,3 +127,7 @@ Run load test (default 1000 events):
 ```bash
 make load-test
 ```
+
+## Documentation
+
+- Architecture and flow diagrams: `docs/architecture-and-message-flow.md`
