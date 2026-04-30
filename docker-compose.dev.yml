@@ -175,6 +175,103 @@ services:
       timeout: 3s
       retries: 5
 
+  calculate-service:
+    build:
+      context: ./calculate-service
+      dockerfile: Dockerfile
+    container_name: hvs-calculate-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      SERVICE_PORT: 8005
+      DATABASE_URL: postgres://postgres:devpassword@postgres:5432/microservices?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: calculate-service-group
+      CALCULATION_COMPLETED_TOPIC: calculation.completed
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8005/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  payment-service:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    container_name: hvs-payment-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      SERVICE_PORT: 8006
+      DATABASE_URL: postgres://postgres:devpassword@postgres:5432/microservices?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: payment-service-group
+      INPUT_TOPIC: calculation.completed
+      PAYMENT_COMPLETED_TOPIC: payment.completed
+    ports:
+      - "8006:8006"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8006/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  notify-service:
+    build:
+      context: ./notify-service
+      dockerfile: Dockerfile
+    container_name: hvs-notify-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      SERVICE_PORT: 8007
+      DATABASE_URL: postgres://postgres:devpassword@postgres:5432/microservices?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: notify-service-group
+      NOTIFICATION_SENT_TOPIC: notification.sent
+    ports:
+      - "8007:8007"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8007/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  present-service:
+    build:
+      context: ./present-service
+      dockerfile: Dockerfile
+    container_name: hvs-present-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      SERVICE_PORT: 8008
+      DATABASE_URL: postgres://postgres:devpassword@postgres:5432/microservices?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: present-service-group
+      TRANSACTION_COMPLETED_TOPIC: transaction.completed
+    ports:
+      - "8008:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8008/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   postgres-data:
   kafka-data:

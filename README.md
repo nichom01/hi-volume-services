@@ -36,6 +36,15 @@ M3 is implemented with:
   - `risk.assessed` / `risk.flagged`
 - Structured JSON-style log lines for service processing events
 
+## M4 status
+
+M4 is implemented with:
+
+- `calculate-service`, `payment-service`, `notify-service`, and `present-service`
+- Full flow from `validation.passed + risk.assessed` to `transaction.completed`
+- Aggregation state tables for `calculate` and `present` to coordinate multi-event joins
+- Health/readiness endpoints on ports `8005` to `8008`
+
 ## Quick start
 
 ```bash
