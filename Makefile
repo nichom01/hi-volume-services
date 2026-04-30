@@ -1,7 +1,7 @@
 COMPOSE_FILE := docker-compose.dev.yml
 DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose"; else echo ""; fi)
 
-.PHONY: dev-up dev-down dev-logs dev-ps dev-health
+.PHONY: dev-up dev-down dev-reset dev-logs dev-ps dev-health
 
 dev-up:
 	@if [ -z "$(DOCKER_COMPOSE)" ]; then echo "docker compose/docker-compose not found"; exit 1; fi
@@ -11,6 +11,10 @@ dev-up:
 dev-down:
 	@if [ -z "$(DOCKER_COMPOSE)" ]; then echo "docker compose/docker-compose not found"; exit 1; fi
 	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) down
+
+dev-reset:
+	@if [ -z "$(DOCKER_COMPOSE)" ]; then echo "docker compose/docker-compose not found"; exit 1; fi
+	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) down -v
 
 dev-logs:
 	@if [ -z "$(DOCKER_COMPOSE)" ]; then echo "docker compose/docker-compose not found"; exit 1; fi

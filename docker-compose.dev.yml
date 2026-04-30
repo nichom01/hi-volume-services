@@ -24,6 +24,9 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
 
   kafka:
     image: confluentinc/cp-kafka:7.6.1
@@ -74,6 +77,9 @@ services:
       SERVICE_PORT: 8001
       DATABASE_URL: postgres://postgres:devpassword@postgres:5432/microservices?sslmode=disable
       KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: declaration-service-group
+      INBOUND_TOPIC: inbound
+      DECLARATION_CREATED_TOPIC: declaration.created
       LOG_LEVEL: debug
     ports:
       - "8001:8001"
@@ -86,3 +92,5 @@ services:
 volumes:
   postgres-data:
   kafka-data:
+  zookeeper-data:
+  zookeeper-log:

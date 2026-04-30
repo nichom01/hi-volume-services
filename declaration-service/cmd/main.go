@@ -18,6 +18,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/nichom01/hi-volume-services/declaration-service/internal/config"
 	"github.com/nichom01/hi-volume-services/declaration-service/internal/health"
+	"github.com/nichom01/hi-volume-services/declaration-service/internal/processor"
 	"github.com/nichom01/hi-volume-services/declaration-service/internal/server"
 )
 
@@ -41,12 +42,29 @@ func main() {
 		log.Fatalf("migration error: %v", err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proc := processor.New(db, processor.Config{
+		ServiceName:             cfg.ServiceName,
+		KafkaBrokers:            cfg.KafkaBrokers,
+		KafkaConsumerGroup:      cfg.KafkaConsumerGroup,
+		InboundTopic:            cfg.InboundTopic,
+		DeclarationCreatedTopic: cfg.DeclarationCreatedTopic,
+	})
+	defer proc.Close()
+
+	processorErrCh := make(chan error, 1)
+	go func() {
+		processorErrCh <- proc.Run(ctx)
+	}()
+
 	srv := server.New(cfg.Port, health.New(db))
 
-	errCh := make(chan error, 1)
+	serverErrCh := make(chan error, 1)
 	go func() {
 		log.Printf("%s starting on port %d", cfg.ServiceName, cfg.Port)
-		errCh <- srv.Start()
+		serverErrCh <- srv.Start()
 	}()
 
 	sigCh := make(chan os.Signal, 1)
@@ -55,15 +73,21 @@ func main() {
 	select {
 	case sig := <-sigCh:
 		log.Printf("received signal %s, shutting down", sig)
-	case err := <-errCh:
+	case err := <-serverErrCh:
 		if !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}
+	case err := <-processorErrCh:
+		if err != nil {
+			log.Fatalf("processor error: %v", err)
+		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
 }
