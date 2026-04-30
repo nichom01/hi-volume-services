@@ -89,6 +89,92 @@ services:
       timeout: 3s
       retries: 5
 
+  validate-service:
+    build:
+      context: ./validate-service
+      dockerfile: Dockerfile
+    container_name: hvs-validate-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      SERVICE_NAME: validate-service
+      ENVIRONMENT: development
+      SERVICE_PORT: 8002
+      DATABASE_URL: postgres://postgres:devpassword@postgres:5432/microservices?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: validate-service-group
+      INPUT_TOPIC: declaration.created
+      VALIDATION_PASSED_TOPIC: validation.passed
+      VALIDATION_FAILED_TOPIC: validation.failed
+      LOG_LEVEL: debug
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8002/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  audit-service:
+    build:
+      context: ./audit-service
+      dockerfile: Dockerfile
+    container_name: hvs-audit-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      SERVICE_NAME: audit-service
+      ENVIRONMENT: development
+      SERVICE_PORT: 8003
+      DATABASE_URL: postgres://postgres:devpassword@postgres:5432/microservices?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: audit-service-group
+      INPUT_TOPIC: declaration.created
+      AUDIT_LOGGED_TOPIC: audit.logged
+      LOG_LEVEL: debug
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8003/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  risk-service:
+    build:
+      context: ./risk-service
+      dockerfile: Dockerfile
+    container_name: hvs-risk-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      SERVICE_NAME: risk-service
+      ENVIRONMENT: development
+      SERVICE_PORT: 8004
+      DATABASE_URL: postgres://postgres:devpassword@postgres:5432/microservices?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: risk-service-group
+      INPUT_TOPIC: declaration.created
+      RISK_ASSESSED_TOPIC: risk.assessed
+      RISK_FLAGGED_TOPIC: risk.flagged
+      LOG_LEVEL: debug
+    ports:
+      - "8004:8004"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8004/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   postgres-data:
   kafka-data:

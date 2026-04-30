@@ -24,6 +24,18 @@ M2 is implemented with:
 - Publish of `declaration.created` event after successful commit
 - Idempotency via `source_event_id` uniqueness
 
+## M3 status
+
+M3 is implemented with:
+
+- `validate-service`, `audit-service`, and `risk-service` as consumers of `declaration.created`
+- Independent PostgreSQL schemas and outbox tables for each new service
+- Emitted events:
+  - `validation.passed` / `validation.failed`
+  - `audit.logged`
+  - `risk.assessed` / `risk.flagged`
+- Structured JSON-style log lines for service processing events
+
 ## Quick start
 
 ```bash

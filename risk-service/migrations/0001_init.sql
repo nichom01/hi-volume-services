@@ -1,0 +1,21 @@
+CREATE SCHEMA IF NOT EXISTS risk;
+
+CREATE TABLE IF NOT EXISTS risk.assessments (
+  id UUID PRIMARY KEY,
+  source_event_id UUID NOT NULL UNIQUE,
+  score INTEGER NOT NULL,
+  flagged BOOLEAN NOT NULL DEFAULT FALSE,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS risk.outbox (
+  id BIGSERIAL PRIMARY KEY,
+  aggregate_id UUID NOT NULL,
+  aggregate_type VARCHAR(255) NOT NULL,
+  event_type VARCHAR(255) NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  processed BOOLEAN DEFAULT FALSE,
+  processed_at TIMESTAMP
+);
