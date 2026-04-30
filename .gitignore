@@ -1,0 +1,13 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Go
+**/bin/
+**/dist/
+**/.cache/
+**/coverage.out
+
+# Env files
+.env
+.env.local
