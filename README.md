@@ -61,6 +61,19 @@ M5 is implemented with:
   - kustomize validation for base + dev overlay
   - manual `workflow_dispatch` deploy job to apply dev overlay
 
+## M6 status
+
+M6 is implemented with:
+
+- Operational verification scripts:
+  - `scripts/e2e_smoke.sh` for entry + downstream event smoke checks
+  - `scripts/load_test.sh` for Kafka producer throughput benchmarking
+- New Make targets:
+  - `make test-smoke`
+  - `make load-test`
+- CI workflow update:
+  - `smoke-e2e` job on `workflow_dispatch` to boot stack and run smoke checks before deploy
+
 ## Quick start
 
 ```bash
@@ -99,4 +112,18 @@ Render dev overlay:
 
 ```bash
 kubectl kustomize k8s/overlays/dev
+```
+
+## Validation quick start
+
+Run smoke checks against running local stack:
+
+```bash
+make test-smoke
+```
+
+Run load test (default 1000 events):
+
+```bash
+make load-test
 ```

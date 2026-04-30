@@ -1,7 +1,7 @@
 COMPOSE_FILE := docker-compose.dev.yml
 DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose"; else echo ""; fi)
 
-.PHONY: dev-up dev-down dev-reset dev-logs dev-ps dev-health
+.PHONY: dev-up dev-down dev-reset dev-logs dev-ps dev-health test-smoke load-test
 
 dev-up:
 	@if [ -z "$(DOCKER_COMPOSE)" ]; then echo "docker compose/docker-compose not found"; exit 1; fi
@@ -35,3 +35,9 @@ dev-health:
 	done; \
 	echo "declaration-service did not become healthy in time"; \
 	exit 1
+
+test-smoke:
+	@bash ./scripts/e2e_smoke.sh
+
+load-test:
+	@bash ./scripts/load_test.sh
