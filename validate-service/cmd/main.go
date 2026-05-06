@@ -48,6 +48,10 @@ func main() {
 		InputTopic:            cfg.InputTopic,
 		ValidationPassedTopic: cfg.ValidationPassedTopic,
 		ValidationFailedTopic: cfg.ValidationFailedTopic,
+		Workers:               cfg.Workers,
+		JobBuffer:             cfg.JobBuffer,
+		WriterBatchSize:       cfg.WriterBatchSize,
+		WriterBatchTimeout:    cfg.WriterBatchTimeout,
 	})
 	defer proc.Close()
 	processorErrCh := make(chan error, 1)

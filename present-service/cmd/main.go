@@ -12,7 +12,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,24 +46,13 @@ func main() {
 	})
 	defer reader.Close()
 	writer := &kafka.Writer{Addr: kafka.TCP(brokers...), Topic: env("TRANSACTION_COMPLETED_TOPIC", "transaction.completed"), AllowAutoTopicCreation: true, RequiredAcks: kafka.RequireOne}
+	writer.BatchSize = envInt("PRESENT_WRITER_BATCH_SIZE", 100)
+	writer.BatchTimeout = time.Duration(envInt("PRESENT_WRITER_BATCH_MS", 10)) * time.Millisecond
 	defer writer.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
-		for {
-			msg, err := reader.FetchMessage(ctx)
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				continue
-			}
-			if err := handlePresent(ctx, db, writer, msg); err == nil {
-				_ = reader.CommitMessages(ctx, msg)
-			}
-		}
-	}()
+	go consumePresent(ctx, db, reader, writer, envInt("PRESENT_WORKERS", 4), envInt("PRESENT_JOB_BUFFER", 128))
 
 	srv := httpServer(port, db)
 	errCh := make(chan error, 1)
@@ -79,6 +70,124 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+type presentResult struct {
+	msg kafka.Message
+	err error
+}
+
+type presentCommitCoordinator struct {
+	mu       sync.Mutex
+	expected map[int]int64
+	pending  map[int]map[int64]kafka.Message
+}
+
+func newPresentCommitCoordinator() *presentCommitCoordinator {
+	return &presentCommitCoordinator{expected: map[int]int64{}, pending: map[int]map[int64]kafka.Message{}}
+}
+
+func (c *presentCommitCoordinator) noteFetched(partition int, offset int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.pending[partition]; !ok {
+		c.pending[partition] = map[int64]kafka.Message{}
+		c.expected[partition] = offset
+	}
+}
+
+func (c *presentCommitCoordinator) onSuccess(msg kafka.Message) []kafka.Message {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	partition := msg.Partition
+	pend, ok := c.pending[partition]
+	if !ok {
+		pend = map[int64]kafka.Message{}
+		c.pending[partition] = pend
+		c.expected[partition] = msg.Offset
+	}
+	pend[msg.Offset] = msg
+	exp := c.expected[partition]
+	var batch []kafka.Message
+	for {
+		m, ok := pend[exp]
+		if !ok {
+			break
+		}
+		delete(pend, exp)
+		batch = append(batch, m)
+		exp++
+	}
+	c.expected[partition] = exp
+	return batch
+}
+
+func consumePresent(ctx context.Context, db *sql.DB, reader *kafka.Reader, writer *kafka.Writer, workers, jobBuffer int) {
+	if workers < 1 {
+		workers = 1
+	}
+	if jobBuffer < 1 {
+		jobBuffer = 1
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	coord := newPresentCommitCoordinator()
+	jobs := make(chan kafka.Message, jobBuffer)
+	results := make(chan presentResult, jobBuffer+workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for msg := range jobs {
+				err := handlePresent(runCtx, db, writer, msg)
+				select {
+				case results <- presentResult{msg: msg, err: err}:
+				case <-runCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for res := range results {
+			if res.err != nil {
+				log.Printf("present handle err partition=%d offset=%d: %v", res.msg.Partition, res.msg.Offset, res.err)
+				continue
+			}
+			batch := coord.onSuccess(res.msg)
+			if len(batch) == 0 {
+				continue
+			}
+			if err := reader.CommitMessages(runCtx, batch...); err != nil {
+				log.Printf("present commit err: %v", err)
+				cancel()
+				return
+			}
+		}
+	}()
+	for {
+		msg, err := reader.FetchMessage(runCtx)
+		if err != nil {
+			if runCtx.Err() != nil || ctx.Err() != nil {
+				break
+			}
+			log.Printf("present fetch err: %v", err)
+			break
+		}
+		coord.noteFetched(msg.Partition, msg.Offset)
+		select {
+		case jobs <- msg:
+		case <-runCtx.Done():
+			break
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+	<-done
 }
 
 func handlePresent(ctx context.Context, db *sql.DB, writer *kafka.Writer, msg kafka.Message) error {
@@ -186,6 +295,7 @@ func httpServer(port string, db *sql.DB) *http.Server {
 }
 func mustEnv(k string) string { v := os.Getenv(k); if v == "" { log.Fatalf("missing env %s", k) }; return v }
 func env(k, fb string) string { if v := os.Getenv(k); v != "" { return v }; return fb }
+func envInt(k string, fb int) int { if v := os.Getenv(k); v != "" { if n, err := strconv.Atoi(v); err == nil { return n } }; return fb }
 func splitCSV(s string) []string { out := []string{}; for _, p := range strings.Split(s, ",") { if v := strings.TrimSpace(p); v != "" { out = append(out, v) } }; return out }
 func waitForDB(db *sql.DB, timeout time.Duration) error { dl := time.Now().Add(timeout); for { if db.Ping() == nil { return nil }; if time.Now().After(dl) { return fmt.Errorf("db not ready") }; time.Sleep(time.Second) } }
 func runMigrations(db *sql.DB, dir string) error {

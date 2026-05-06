@@ -12,7 +12,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -48,11 +50,13 @@ func main() {
 	})
 	defer reader.Close()
 	writer := &kafka.Writer{Addr: kafka.TCP(brokers...), Topic: outTopic, AllowAutoTopicCreation: true, RequiredAcks: kafka.RequireOne}
+	writer.BatchSize = envInt("CALCULATE_WRITER_BATCH_SIZE", 100)
+	writer.BatchTimeout = time.Duration(envInt("CALCULATE_WRITER_BATCH_MS", 10)) * time.Millisecond
 	defer writer.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go process(ctx, db, reader, writer)
+	go process(ctx, db, reader, writer, envInt("CALCULATE_WORKERS", 4), envInt("CALCULATE_JOB_BUFFER", 128))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"status":"ok"}`)) })
@@ -83,22 +87,122 @@ func main() {
 	_ = srv.Shutdown(shutdownCtx)
 }
 
-func process(ctx context.Context, db *sql.DB, reader *kafka.Reader, writer *kafka.Writer) {
+type calculateResult struct {
+	msg kafka.Message
+	err error
+}
+
+type calculateCommitCoordinator struct {
+	mu       sync.Mutex
+	expected map[int]int64
+	pending  map[int]map[int64]kafka.Message
+}
+
+func newCalculateCommitCoordinator() *calculateCommitCoordinator {
+	return &calculateCommitCoordinator{expected: map[int]int64{}, pending: map[int]map[int64]kafka.Message{}}
+}
+
+func (c *calculateCommitCoordinator) noteFetched(partition int, offset int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.pending[partition]; !ok {
+		c.pending[partition] = map[int64]kafka.Message{}
+		c.expected[partition] = offset
+	}
+}
+
+func (c *calculateCommitCoordinator) onSuccess(msg kafka.Message) []kafka.Message {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	partition := msg.Partition
+	pend, ok := c.pending[partition]
+	if !ok {
+		pend = map[int64]kafka.Message{}
+		c.pending[partition] = pend
+		c.expected[partition] = msg.Offset
+	}
+	pend[msg.Offset] = msg
+	exp := c.expected[partition]
+	var batch []kafka.Message
 	for {
-		msg, err := reader.FetchMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
+		m, ok := pend[exp]
+		if !ok {
+			break
+		}
+		delete(pend, exp)
+		batch = append(batch, m)
+		exp++
+	}
+	c.expected[partition] = exp
+	return batch
+}
+
+func process(ctx context.Context, db *sql.DB, reader *kafka.Reader, writer *kafka.Writer, workers, jobBuffer int) {
+	if workers < 1 {
+		workers = 1
+	}
+	if jobBuffer < 1 {
+		jobBuffer = 1
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	coord := newCalculateCommitCoordinator()
+	jobs := make(chan kafka.Message, jobBuffer)
+	results := make(chan calculateResult, jobBuffer+workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for msg := range jobs {
+				err := handle(runCtx, db, writer, msg)
+				select {
+				case results <- calculateResult{msg: msg, err: err}:
+				case <-runCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for res := range results {
+			if res.err != nil {
+				log.Printf("calculate handle err: %v", res.err)
+				continue
+			}
+			batch := coord.onSuccess(res.msg)
+			if len(batch) == 0 {
+				continue
+			}
+			if err := reader.CommitMessages(runCtx, batch...); err != nil {
+				log.Printf("calculate commit err: %v", err)
+				cancel()
 				return
 			}
+		}
+	}()
+	for {
+		msg, err := reader.FetchMessage(runCtx)
+		if err != nil {
+			if runCtx.Err() != nil || ctx.Err() != nil {
+				break
+			}
 			log.Printf("calculate fetch err: %v", err)
-			continue
+			break
 		}
-		if err := handle(ctx, db, writer, msg); err != nil {
-			log.Printf("calculate handle err: %v", err)
-			continue
+		coord.noteFetched(msg.Partition, msg.Offset)
+		select {
+		case jobs <- msg:
+		case <-runCtx.Done():
+			break
 		}
-		_ = reader.CommitMessages(ctx, msg)
 	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+	<-done
 }
 
 func handle(ctx context.Context, db *sql.DB, writer *kafka.Writer, msg kafka.Message) error {
@@ -203,6 +307,14 @@ func env(k, fallback string) string {
 		return v
 	}
 	return fallback
+}
+func envInt(k string, fb int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fb
 }
 func splitCSV(s string) []string {
 	var out []string

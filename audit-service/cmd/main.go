@@ -46,7 +46,11 @@ func main() {
 		KafkaBrokers:  cfg.KafkaBrokers,
 		ConsumerGroup: cfg.ConsumerGroup,
 		InputTopic:    cfg.InputTopic,
-		OutputTopic:   cfg.OutputTopic,
+		OutputTopic:        cfg.OutputTopic,
+		Workers:            cfg.Workers,
+		JobBuffer:          cfg.JobBuffer,
+		WriterBatchSize:    cfg.WriterBatchSize,
+		WriterBatchTimeout: cfg.WriterBatchTimeout,
 	})
 	defer p.Close()
 	perr := make(chan error, 1)

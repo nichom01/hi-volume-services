@@ -113,6 +113,10 @@ services:
       INPUT_TOPIC: declaration.created
       VALIDATION_PASSED_TOPIC: validation.passed
       VALIDATION_FAILED_TOPIC: validation.failed
+      VALIDATE_WORKERS: "8"
+      VALIDATE_JOB_BUFFER: "256"
+      VALIDATE_WRITER_BATCH_SIZE: "100"
+      VALIDATE_WRITER_BATCH_MS: "10"
       LOG_LEVEL: debug
     ports:
       - "8002:8002"
@@ -141,6 +145,10 @@ services:
       KAFKA_CONSUMER_GROUP: audit-service-group
       INPUT_TOPIC: declaration.created
       AUDIT_LOGGED_TOPIC: audit.logged
+      AUDIT_WORKERS: "8"
+      AUDIT_JOB_BUFFER: "256"
+      AUDIT_WRITER_BATCH_SIZE: "100"
+      AUDIT_WRITER_BATCH_MS: "10"
       LOG_LEVEL: debug
     ports:
       - "8003:8003"
@@ -170,6 +178,10 @@ services:
       INPUT_TOPIC: declaration.created
       RISK_ASSESSED_TOPIC: risk.assessed
       RISK_FLAGGED_TOPIC: risk.flagged
+      RISK_WORKERS: "8"
+      RISK_JOB_BUFFER: "256"
+      RISK_WRITER_BATCH_SIZE: "100"
+      RISK_WRITER_BATCH_MS: "10"
       LOG_LEVEL: debug
     ports:
       - "8004:8004"
@@ -195,6 +207,10 @@ services:
       KAFKA_BROKERS: kafka:9092
       KAFKA_CONSUMER_GROUP: calculate-service-group
       CALCULATION_COMPLETED_TOPIC: calculation.completed
+      CALCULATE_WORKERS: "4"
+      CALCULATE_JOB_BUFFER: "128"
+      CALCULATE_WRITER_BATCH_SIZE: "100"
+      CALCULATE_WRITER_BATCH_MS: "10"
     ports:
       - "8005:8005"
     healthcheck:
@@ -220,6 +236,10 @@ services:
       KAFKA_CONSUMER_GROUP: payment-service-group
       INPUT_TOPIC: calculation.completed
       PAYMENT_COMPLETED_TOPIC: payment.completed
+      PAYMENT_WORKERS: "8"
+      PAYMENT_JOB_BUFFER: "256"
+      PAYMENT_WRITER_BATCH_SIZE: "100"
+      PAYMENT_WRITER_BATCH_MS: "10"
     ports:
       - "8006:8006"
     healthcheck:
@@ -244,6 +264,10 @@ services:
       KAFKA_BROKERS: kafka:9092
       KAFKA_CONSUMER_GROUP: notify-service-group
       NOTIFICATION_SENT_TOPIC: notification.sent
+      NOTIFY_WORKERS: "8"
+      NOTIFY_JOB_BUFFER: "256"
+      NOTIFY_WRITER_BATCH_SIZE: "100"
+      NOTIFY_WRITER_BATCH_MS: "10"
     ports:
       - "8007:8007"
     healthcheck:
@@ -268,6 +292,10 @@ services:
       KAFKA_BROKERS: kafka:9092
       KAFKA_CONSUMER_GROUP: present-service-group
       TRANSACTION_COMPLETED_TOPIC: transaction.completed
+      PRESENT_WORKERS: "4"
+      PRESENT_JOB_BUFFER: "128"
+      PRESENT_WRITER_BATCH_SIZE: "100"
+      PRESENT_WRITER_BATCH_MS: "10"
     ports:
       - "8008:8008"
     healthcheck:

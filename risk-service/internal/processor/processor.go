@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +21,10 @@ type Config struct {
 	InputTopic       string
 	RiskAssessedTopic string
 	RiskFlaggedTopic  string
+	Workers          int
+	JobBuffer        int
+	WriterBatchSize  int
+	WriterBatchTimeout time.Duration
 }
 
 type Processor struct {
@@ -30,36 +35,174 @@ type Processor struct {
 	cfg            Config
 }
 
+type workerResult struct {
+	msg kafka.Message
+	err error
+}
+
+type commitCoordinator struct {
+	mu       sync.Mutex
+	expected map[int]int64
+	pending  map[int]map[int64]kafka.Message
+}
+
+func newCommitCoordinator() *commitCoordinator {
+	return &commitCoordinator{
+		expected: make(map[int]int64),
+		pending:  make(map[int]map[int64]kafka.Message),
+	}
+}
+
+func (c *commitCoordinator) noteFetched(partition int, offset int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.pending[partition]; !ok {
+		c.pending[partition] = make(map[int64]kafka.Message)
+		c.expected[partition] = offset
+	}
+}
+
+func (c *commitCoordinator) onSuccess(partition int, offset int64, msg kafka.Message) []kafka.Message {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pend, ok := c.pending[partition]
+	if !ok {
+		pend = make(map[int64]kafka.Message)
+		c.pending[partition] = pend
+		c.expected[partition] = offset
+	}
+	pend[offset] = msg
+	exp := c.expected[partition]
+	var batch []kafka.Message
+	for {
+		m, ok := pend[exp]
+		if !ok {
+			break
+		}
+		delete(pend, exp)
+		batch = append(batch, m)
+		exp++
+	}
+	c.expected[partition] = exp
+	return batch
+}
+
 func New(db *sql.DB, cfg Config) *Processor {
 	brokers := splitCSV(cfg.KafkaBrokers)
+	wbatch := cfg.WriterBatchSize
+	if wbatch < 1 {
+		wbatch = 100
+	}
+	wtimeout := cfg.WriterBatchTimeout
+	if wtimeout <= 0 {
+		wtimeout = 10 * time.Millisecond
+	}
 	return &Processor{
 		db: db,
 		cfg: cfg,
 		reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers: brokers, GroupID: cfg.ConsumerGroup, Topic: cfg.InputTopic, MaxWait: 2 * time.Second,
 		}),
-		assessedWriter: &kafka.Writer{Addr: kafka.TCP(brokers...), Topic: cfg.RiskAssessedTopic, AllowAutoTopicCreation: true, RequiredAcks: kafka.RequireOne},
-		flaggedWriter:  &kafka.Writer{Addr: kafka.TCP(brokers...), Topic: cfg.RiskFlaggedTopic, AllowAutoTopicCreation: true, RequiredAcks: kafka.RequireOne},
+		assessedWriter: &kafka.Writer{Addr: kafka.TCP(brokers...), Topic: cfg.RiskAssessedTopic, AllowAutoTopicCreation: true, RequiredAcks: kafka.RequireOne, BatchSize: wbatch, BatchTimeout: wtimeout},
+		flaggedWriter:  &kafka.Writer{Addr: kafka.TCP(brokers...), Topic: cfg.RiskFlaggedTopic, AllowAutoTopicCreation: true, RequiredAcks: kafka.RequireOne, BatchSize: wbatch, BatchTimeout: wtimeout},
 	}
 }
 
 func (p *Processor) Run(ctx context.Context) error {
+	workers := p.cfg.Workers
+	if workers < 1 {
+		workers = 1
+	}
+	buf := p.cfg.JobBuffer
+	if buf < 1 {
+		buf = 1
+	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	log.Printf("{\"service\":\"%s\",\"msg\":\"event processor started\",\"input\":\"%s\",\"workers\":%d,\"jobBuffer\":%d}", p.cfg.ServiceName, p.cfg.InputTopic, workers, buf)
+	coord := newCommitCoordinator()
+	jobs := make(chan kafka.Message, buf)
+	results := make(chan workerResult, buf+workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for msg := range jobs {
+				err := p.handleMessage(runCtx, msg)
+				select {
+				case results <- workerResult{msg: msg, err: err}:
+				case <-runCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+	var commitErrMu sync.Mutex
+	var commitErr error
+	commitDone := make(chan struct{})
+	go func() {
+		defer close(commitDone)
+		for res := range results {
+			commitErrMu.Lock()
+			fatal := commitErr != nil
+			commitErrMu.Unlock()
+			if fatal {
+				continue
+			}
+			if res.err != nil {
+				log.Printf("{\"service\":\"%s\",\"level\":\"error\",\"error\":%q}", p.cfg.ServiceName, res.err.Error())
+				continue
+			}
+			batch := coord.onSuccess(res.msg.Partition, res.msg.Offset, res.msg)
+			if len(batch) == 0 {
+				continue
+			}
+			if err := p.reader.CommitMessages(runCtx, batch...); err != nil {
+				if runCtx.Err() != nil {
+					return
+				}
+				commitErrMu.Lock()
+				commitErr = fmt.Errorf("commit messages: %w", err)
+				commitErrMu.Unlock()
+				cancelRun()
+			}
+		}
+	}()
+fetchLoop:
 	for {
-		msg, err := p.reader.FetchMessage(ctx)
+		msg, err := p.reader.FetchMessage(runCtx)
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil
+			if runCtx.Err() != nil || ctx.Err() != nil {
+				break fetchLoop
+			}
+			close(jobs)
+			wg.Wait()
+			close(results)
+			<-commitDone
+			commitErrMu.Lock()
+			errOut := commitErr
+			commitErrMu.Unlock()
+			if errOut != nil {
+				return errOut
 			}
 			return err
 		}
-		if err := p.handleMessage(ctx, msg); err != nil {
-			log.Printf("{\"service\":\"%s\",\"level\":\"error\",\"error\":%q}", p.cfg.ServiceName, err.Error())
-			continue
-		}
-		if err := p.reader.CommitMessages(ctx, msg); err != nil {
-			return err
+		coord.noteFetched(msg.Partition, msg.Offset)
+		select {
+		case jobs <- msg:
+		case <-runCtx.Done():
+			break fetchLoop
 		}
 	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+	<-commitDone
+	commitErrMu.Lock()
+	errOut := commitErr
+	commitErrMu.Unlock()
+	return errOut
 }
 
 func (p *Processor) Close() error {

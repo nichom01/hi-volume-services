@@ -48,6 +48,10 @@ func main() {
 		InputTopic:        cfg.InputTopic,
 		RiskAssessedTopic: cfg.RiskAssessedTopic,
 		RiskFlaggedTopic:  cfg.RiskFlaggedTopic,
+		Workers:            cfg.Workers,
+		JobBuffer:          cfg.JobBuffer,
+		WriterBatchSize:    cfg.WriterBatchSize,
+		WriterBatchTimeout: cfg.WriterBatchTimeout,
 	})
 	defer p.Close()
 	perr := make(chan error, 1)
