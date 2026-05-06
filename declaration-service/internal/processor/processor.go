@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nichom01/hi-volume-services/declaration-service/internal/metrics"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -122,7 +123,8 @@ func New(db *sql.DB, cfg Config) *Processor {
 			Brokers: brokers,
 			GroupID: cfg.KafkaConsumerGroup,
 			Topic:   cfg.InboundTopic,
-			MaxWait: 2 * time.Second,
+			// Tighter poll improves latency under sustained load; workers still batch via job queue.
+			MaxWait: 250 * time.Millisecond,
 		}),
 		writer: &kafka.Writer{
 			Addr:                   kafka.TCP(brokers...),
@@ -264,7 +266,16 @@ func (p *Processor) Close() error {
 	return err2
 }
 
-func (p *Processor) handleMessage(ctx context.Context, msg kafka.Message) error {
+func (p *Processor) handleMessage(ctx context.Context, msg kafka.Message) (err error) {
+	start := time.Now()
+	defer func() {
+		if err != nil {
+			metrics.DeclarationsFailedTotal.Inc()
+			return
+		}
+		metrics.ProcessingSeconds.Observe(time.Since(start).Seconds())
+	}()
+
 	sourceEventID := extractSourceEventID(msg)
 	if sourceEventID == "" {
 		sourceEventID = uuid.NewString()
@@ -294,63 +305,73 @@ func (p *Processor) handleMessage(ctx context.Context, msg kafka.Message) error 
 		},
 	}
 
-	eventPayload, err := json.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("marshal declaration event: %w", err)
+	eventPayload, marshalErr := json.Marshal(event)
+	if marshalErr != nil {
+		err = fmt.Errorf("marshal declaration event: %w", marshalErr)
+		return err
 	}
 
-	tx, err := p.db.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+	tx, beginErr := p.db.BeginTx(ctx, &sql.TxOptions{})
+	if beginErr != nil {
+		err = fmt.Errorf("begin tx: %w", beginErr)
+		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	res, err := tx.ExecContext(ctx, `
+	res, execErr := tx.ExecContext(ctx, `
 		INSERT INTO declaration.declarations (id, source_event_id, payload)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (source_event_id) DO NOTHING
 	`, declarationID, sourceEventID, msg.Value)
-	if err != nil {
-		return fmt.Errorf("insert declaration: %w", err)
+	if execErr != nil {
+		err = fmt.Errorf("insert declaration: %w", execErr)
+		return err
 	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
+	rows, rowsErr := res.RowsAffected()
+	if rowsErr != nil {
+		err = fmt.Errorf("rows affected: %w", rowsErr)
+		return err
 	}
 	if rows == 0 {
 		// Idempotent replay: record was already handled previously.
+		metrics.DeclarationsIdempotentTotal.Inc()
 		return nil
 	}
 
 	var outboxID int64
-	if err := tx.QueryRowContext(ctx, `
+	if scanErr := tx.QueryRowContext(ctx, `
 		INSERT INTO declaration.outbox (aggregate_id, aggregate_type, event_type, payload)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id
-	`, declarationID, "declaration", "declaration.created", eventPayload).Scan(&outboxID); err != nil {
-		return fmt.Errorf("insert outbox: %w", err)
+	`, declarationID, "declaration", "declaration.created", eventPayload).Scan(&outboxID); scanErr != nil {
+		err = fmt.Errorf("insert outbox: %w", scanErr)
+		return err
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit tx: %w", err)
+	if commitErr := tx.Commit(); commitErr != nil {
+		err = fmt.Errorf("commit tx: %w", commitErr)
+		return err
 	}
 
-	if err := p.writer.WriteMessages(ctx, kafka.Message{
+	if writeErr := p.writer.WriteMessages(ctx, kafka.Message{
 		Key:   []byte(declarationID),
 		Value: eventPayload,
 		Time:  now,
-	}); err != nil {
-		return fmt.Errorf("publish declaration.created: %w", err)
+	}); writeErr != nil {
+		err = fmt.Errorf("publish declaration.created: %w", writeErr)
+		return err
 	}
 
-	if _, err := p.db.ExecContext(ctx, `
+	if _, upErr := p.db.ExecContext(ctx, `
 		UPDATE declaration.outbox
 		SET processed = TRUE, processed_at = NOW()
 		WHERE id = $1
-	`, outboxID); err != nil {
-		return fmt.Errorf("mark outbox processed: %w", err)
+	`, outboxID); upErr != nil {
+		err = fmt.Errorf("mark outbox processed: %w", upErr)
+		return err
 	}
 
+	metrics.DeclarationsProcessedTotal.Inc()
 	log.Printf("declaration created id=%s source_event_id=%s", declarationID, sourceEventID)
 	return nil
 }

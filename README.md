@@ -69,9 +69,12 @@ M6 is implemented with:
   - `scripts/e2e_smoke.sh` for entry + downstream event smoke checks
   - `scripts/load_test.sh` for Kafka producer throughput benchmarking on a dedicated perf topic (`inbound.perf` by default)
   - `scripts/load_e2e.sh` for end-to-end load validation across services and persistence
+  - `scripts/declaration_benchmark.sh` for declaration-service sustained rate, latency percentiles, and reliability gates (see `docs/declaration-benchmark-runbook.md`)
 - New Make targets:
   - `make test-smoke`
   - `make load-test`
+  - `make declaration-benchmark-smoke`
+  - `make declaration-benchmark-stepped`
 - CI workflow update:
   - `smoke-e2e` job on `workflow_dispatch` to boot stack and run smoke checks before deploy
 
@@ -161,12 +164,28 @@ Environment variables (also set in [`docker-compose.dev.yml`](docker-compose.dev
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `DECLARATION_WORKERS` | `8` | Concurrent handlers processing inbound messages |
-| `DECLARATION_JOB_BUFFER` | `256` | Bounded queue length between fetch loop and workers |
-| `DECLARATION_WRITER_BATCH_SIZE` | `100` | Batch size for publishing `declaration.created` |
-| `DECLARATION_WRITER_BATCH_MS` | `10` | Batch flush interval for the outbound Kafka writer (milliseconds) |
+| `DECLARATION_WORKERS` | `16` | Concurrent handlers processing inbound messages |
+| `DECLARATION_JOB_BUFFER` | `512` | Bounded queue length between fetch loop and workers |
+| `DECLARATION_WRITER_BATCH_SIZE` | `200` | Batch size for publishing `declaration.created` |
+| `DECLARATION_WRITER_BATCH_MS` | `5` | Batch flush interval for the outbound Kafka writer (milliseconds) |
 
 After changing values, recreate/restart the declaration-service container or rollout the deployment.
+
+### Declaration benchmark (200 msg/s gate)
+
+Run a 30s smoke benchmark (throughput + p95 + error budget):
+
+```bash
+./scripts/declaration_benchmark.sh --profile smoke
+```
+
+Stepped rates for bottleneck finding:
+
+```bash
+make declaration-benchmark-stepped
+```
+
+Prometheus metrics are exposed at `http://localhost:8001/metrics` (`declaration_*` series). Full runbook: [`docs/declaration-benchmark-runbook.md`](docs/declaration-benchmark-runbook.md).
 
 ## Documentation
 

@@ -31,13 +31,13 @@ spec:
             - name: DECLARATION_CREATED_TOPIC
               value: declaration.created
             - name: DECLARATION_WORKERS
-              value: "8"
+              value: "16"
             - name: DECLARATION_JOB_BUFFER
-              value: "256"
+              value: "512"
             - name: DECLARATION_WRITER_BATCH_SIZE
-              value: "100"
+              value: "200"
             - name: DECLARATION_WRITER_BATCH_MS
-              value: "10"
+              value: "5"
           ports:
             - containerPort: 8001
           readinessProbe:

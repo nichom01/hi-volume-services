@@ -1,7 +1,8 @@
 COMPOSE_FILE := docker-compose.dev.yml
 DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose"; else echo ""; fi)
 
-.PHONY: dev-up dev-down dev-reset dev-logs dev-ps dev-health test-smoke load-test
+.PHONY: dev-up dev-down dev-reset dev-logs dev-ps dev-health test-smoke load-test \
+	declaration-benchmark-smoke declaration-benchmark-stepped
 
 dev-up:
 	@if [ -z "$(DOCKER_COMPOSE)" ]; then echo "docker compose/docker-compose not found"; exit 1; fi
@@ -41,3 +42,9 @@ test-smoke:
 
 load-test:
 	@bash ./scripts/load_test.sh
+
+declaration-benchmark-smoke:
+	@bash ./scripts/declaration_benchmark.sh --profile smoke
+
+declaration-benchmark-stepped:
+	@bash ./scripts/declaration_benchmark.sh --stepped
