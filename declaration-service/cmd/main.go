@@ -51,6 +51,10 @@ func main() {
 		KafkaConsumerGroup:      cfg.KafkaConsumerGroup,
 		InboundTopic:            cfg.InboundTopic,
 		DeclarationCreatedTopic: cfg.DeclarationCreatedTopic,
+		Workers:                 cfg.Workers,
+		JobBuffer:               cfg.JobBuffer,
+		WriterBatchSize:         cfg.WriterBatchSize,
+		WriterBatchTimeout:      cfg.WriterBatchTimeout,
 	})
 	defer proc.Close()
 

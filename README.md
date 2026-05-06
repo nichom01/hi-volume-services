@@ -67,7 +67,8 @@ M6 is implemented with:
 
 - Operational verification scripts:
   - `scripts/e2e_smoke.sh` for entry + downstream event smoke checks
-  - `scripts/load_test.sh` for Kafka producer throughput benchmarking
+  - `scripts/load_test.sh` for Kafka producer throughput benchmarking on a dedicated perf topic (`inbound.perf` by default)
+  - `scripts/load_e2e.sh` for end-to-end load validation across services and persistence
 - New Make targets:
   - `make test-smoke`
   - `make load-test`
@@ -127,6 +128,45 @@ Run load test (default 1000 events):
 ```bash
 make load-test
 ```
+
+Run load test with custom args:
+
+```bash
+./scripts/load_test.sh 50000 -1 inbound.perf
+```
+
+Run end-to-end load validation (default 2000 events):
+
+```bash
+./scripts/load_e2e.sh
+```
+
+Run end-to-end load validation with custom args:
+
+```bash
+./scripts/load_e2e.sh 10000 420 2 100
+```
+
+Arguments:
+- `N` = number of inbound events to publish (default `2000`)
+- `TIMEOUT_SEC` = overall wait timeout in seconds (default `240`)
+- `POLL_SEC` = polling interval in seconds (default `3`)
+- `AMOUNT` = inbound payload amount (default `100`)
+
+### declaration-service throughput tuning
+
+The declaration processor runs a bounded worker pool with ordered offset commits so Kafka commits stay correct when handling completes out of order.
+
+Environment variables (also set in [`docker-compose.dev.yml`](docker-compose.dev.yml) and Kubernetes `declaration-service` deployment):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DECLARATION_WORKERS` | `8` | Concurrent handlers processing inbound messages |
+| `DECLARATION_JOB_BUFFER` | `256` | Bounded queue length between fetch loop and workers |
+| `DECLARATION_WRITER_BATCH_SIZE` | `100` | Batch size for publishing `declaration.created` |
+| `DECLARATION_WRITER_BATCH_MS` | `10` | Batch flush interval for the outbound Kafka writer (milliseconds) |
+
+After changing values, recreate/restart the declaration-service container or rollout the deployment.
 
 ## Documentation
 

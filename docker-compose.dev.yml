@@ -80,6 +80,10 @@ services:
       KAFKA_CONSUMER_GROUP: declaration-service-group
       INBOUND_TOPIC: inbound
       DECLARATION_CREATED_TOPIC: declaration.created
+      DECLARATION_WORKERS: "8"
+      DECLARATION_JOB_BUFFER: "256"
+      DECLARATION_WRITER_BATCH_SIZE: "100"
+      DECLARATION_WRITER_BATCH_MS: "10"
       LOG_LEVEL: debug
     ports:
       - "8001:8001"

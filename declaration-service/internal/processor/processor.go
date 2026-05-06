@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,10 @@ type Config struct {
 	KafkaConsumerGroup      string
 	InboundTopic            string
 	DeclarationCreatedTopic string
+	Workers                 int
+	JobBuffer               int
+	WriterBatchSize         int
+	WriterBatchTimeout      time.Duration
 }
 
 type Processor struct {
@@ -26,6 +31,60 @@ type Processor struct {
 	reader *kafka.Reader
 	writer *kafka.Writer
 	cfg    Config
+}
+
+type workerResult struct {
+	msg kafka.Message
+	err error
+}
+
+// commitCoordinator commits Kafka offsets in partition offset order when workers finish out of order.
+type commitCoordinator struct {
+	mu       sync.Mutex
+	expected map[int]int64                  // next offset to commit per partition
+	pending  map[int]map[int64]kafka.Message // buffered successful completions
+}
+
+func newCommitCoordinator() *commitCoordinator {
+	return &commitCoordinator{
+		expected: make(map[int]int64),
+		pending:  make(map[int]map[int64]kafka.Message),
+	}
+}
+
+func (c *commitCoordinator) noteFetched(partition int, offset int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.pending[partition]; !ok {
+		c.pending[partition] = make(map[int64]kafka.Message)
+		c.expected[partition] = offset
+	}
+}
+
+func (c *commitCoordinator) onSuccess(partition int, offset int64, msg kafka.Message) []kafka.Message {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pend, ok := c.pending[partition]
+	if !ok {
+		pend = make(map[int64]kafka.Message)
+		c.pending[partition] = pend
+		c.expected[partition] = offset
+	}
+	pend[offset] = msg
+
+	exp := c.expected[partition]
+	var batch []kafka.Message
+	for {
+		m, ok := pend[exp]
+		if !ok {
+			break
+		}
+		delete(pend, exp)
+		batch = append(batch, m)
+		exp++
+	}
+	c.expected[partition] = exp
+	return batch
 }
 
 type Event struct {
@@ -48,6 +107,14 @@ type Metadata struct {
 
 func New(db *sql.DB, cfg Config) *Processor {
 	brokers := splitCSV(cfg.KafkaBrokers)
+	wbatch := cfg.WriterBatchSize
+	if wbatch < 1 {
+		wbatch = 100
+	}
+	wtimeout := cfg.WriterBatchTimeout
+	if wtimeout <= 0 {
+		wtimeout = 10 * time.Millisecond
+	}
 	return &Processor{
 		db: db,
 		cfg: cfg,
@@ -62,31 +129,129 @@ func New(db *sql.DB, cfg Config) *Processor {
 			Topic:                  cfg.DeclarationCreatedTopic,
 			AllowAutoTopicCreation: true,
 			RequiredAcks:           kafka.RequireOne,
+			BatchSize:              wbatch,
+			BatchTimeout:           wtimeout,
 		},
 	}
 }
 
 func (p *Processor) Run(ctx context.Context) error {
-	log.Printf("event processor started: inbound=%s outbound=%s", p.cfg.InboundTopic, p.cfg.DeclarationCreatedTopic)
+	workers := p.cfg.Workers
+	if workers < 1 {
+		workers = 1
+	}
+	buf := p.cfg.JobBuffer
+	if buf < 1 {
+		buf = 1
+	}
 
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	log.Printf("event processor started: inbound=%s outbound=%s workers=%d job_buffer=%d",
+		p.cfg.InboundTopic, p.cfg.DeclarationCreatedTopic, workers, buf)
+
+	coord := newCommitCoordinator()
+	jobs := make(chan kafka.Message, buf)
+	resultsBuf := buf + workers
+	if resultsBuf < workers*2 {
+		resultsBuf = workers * 2
+	}
+	results := make(chan workerResult, resultsBuf)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for msg := range jobs {
+				err := p.handleMessage(runCtx, msg)
+				select {
+				case results <- workerResult{msg: msg, err: err}:
+				case <-runCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	var commitErrMu sync.Mutex
+	var commitErr error
+
+	commitDone := make(chan struct{})
+	go func() {
+		defer close(commitDone)
+		for res := range results {
+			commitErrMu.Lock()
+			fatal := commitErr != nil
+			commitErrMu.Unlock()
+			if fatal {
+				continue
+			}
+
+			if res.err != nil {
+				log.Printf("failed processing message key=%s partition=%d offset=%d: %v",
+					string(res.msg.Key), res.msg.Partition, res.msg.Offset, res.err)
+				continue
+			}
+
+			batch := coord.onSuccess(res.msg.Partition, res.msg.Offset, res.msg)
+			if len(batch) == 0 {
+				continue
+			}
+			if err := p.reader.CommitMessages(runCtx, batch...); err != nil {
+				if runCtx.Err() != nil {
+					return
+				}
+				commitErrMu.Lock()
+				commitErr = fmt.Errorf("commit messages: %w", err)
+				commitErrMu.Unlock()
+				cancelRun()
+				continue
+			}
+		}
+	}()
+
+fetchLoop:
 	for {
-		msg, err := p.reader.FetchMessage(ctx)
+		msg, err := p.reader.FetchMessage(runCtx)
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil
+			if runCtx.Err() != nil || ctx.Err() != nil {
+				break fetchLoop
+			}
+			close(jobs)
+			wg.Wait()
+			close(results)
+			<-commitDone
+			commitErrMu.Lock()
+			errOut := commitErr
+			commitErrMu.Unlock()
+			if errOut != nil {
+				return errOut
 			}
 			return fmt.Errorf("fetch inbound message: %w", err)
 		}
 
-		if err := p.handleMessage(ctx, msg); err != nil {
-			log.Printf("failed processing message key=%s partition=%d offset=%d: %v", string(msg.Key), msg.Partition, msg.Offset, err)
-			continue
-		}
-
-		if err := p.reader.CommitMessages(ctx, msg); err != nil {
-			return fmt.Errorf("commit message offset %d: %w", msg.Offset, err)
+		coord.noteFetched(msg.Partition, msg.Offset)
+		select {
+		case jobs <- msg:
+		case <-runCtx.Done():
+			break fetchLoop
 		}
 	}
+
+	close(jobs)
+	wg.Wait()
+	close(results)
+	<-commitDone
+
+	commitErrMu.Lock()
+	errOut := commitErr
+	commitErrMu.Unlock()
+	if errOut != nil {
+		return errOut
+	}
+	return nil
 }
 
 func (p *Processor) Close() error {
@@ -116,10 +281,10 @@ func (p *Processor) handleMessage(ctx context.Context, msg kafka.Message) error 
 		EventType:     "declaration.created",
 		Version:       1,
 		Payload: map[string]any{
-			"declarationId": declarationID,
-			"inboundTopic":  msg.Topic,
-			"inboundOffset": msg.Offset,
-			"inboundPayload": json.RawMessage(msg.Value),
+			"declarationId":  declarationID,
+			"inboundTopic":     msg.Topic,
+			"inboundOffset":    msg.Offset,
+			"inboundPayload":   json.RawMessage(msg.Value),
 		},
 		Metadata: Metadata{
 			CorrelationID: sourceEventID,
